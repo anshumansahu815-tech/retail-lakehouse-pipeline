@@ -21,7 +21,11 @@ SELECT
     SUM(footfall) AS total_footfall,
     SUM(bills) AS total_bills,
     ROUND(SUM(revenue), 2) AS total_revenue,
-    ROUND(AVG(conversion_rate), 4) AS avg_conversion_rate
+    ROUND(
+        SUM(CASE WHEN sensor_ok THEN bills ELSE 0 END)
+        / NULLIF(SUM(CASE WHEN sensor_ok THEN footfall ELSE 0 END), 0),
+        4
+    ) AS sensor_valid_conversion_rate
 FROM RETAIL_DW.GOLD.GOLD_STORE_HOUR
 GROUP BY store_id, city, format
 ORDER BY total_revenue DESC;
