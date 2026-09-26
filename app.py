@@ -1,50 +1,89 @@
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="RetailLens Lakehouse Dashboard", layout="wide")
+st.set_page_config(
+    page_title="RetailLens: Store Hourly Lakehouse",
+    page_icon="🛍️",
+    layout="wide"
+)
 
-st.title("RetailLens: Store Hourly Performance Dashboard")
-st.caption("Capstone Project 2026 | Anshuman Sahu (Roll: 23053678) | Databricks & Snowflake Lakehouse")
+# 1. Load Production Gold Mart Dataset
+@st.cache_data
+def load_gold_data():
+    data = pd.read_csv("gold_store_hour.csv")
+    data.columns = [col.upper() for col in data.columns]
+    return data
 
-# Top KPI Summary Cards
-kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-kpi1.metric("Total Revenue", "$44.77M")
-kpi2.metric("Total Footfall", "483,233")
-kpi3.metric("Total Transactions", "86,594")
-kpi4.metric("Avg Conversion Rate", "17.92%")
-kpi5.metric("Active Stores", "12 Locations")
+df = load_gold_data()
 
-st.divider()
+# 2. Executive Business KPIs (Full Gold Mart: 12,960 store-hours)
+total_revenue = df["REVENUE"].sum()
+total_footfall = int(df["FOOTFALL"].sum())
+total_bills = int(df["BILLS"].sum())
+active_stores = df["STORE_ID"].nunique()
 
-# Hourly Performance Section
-st.subheader("Hourly Revenue & Footfall Distribution (10:00 - 21:00)")
-hourly_data = pd.DataFrame({
-    "Store Hour": ["10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00", "21:00"],
-    "Footfall (Visitors)": [33800, 33900, 35900, 37900, 22500, 22800, 20200, 33800, 68400, 68200, 68100, 37800],
-    "Revenue ($)": [3690000, 3670000, 3710000, 3660000, 1020000, 1010000, 990000, 3660000, 6640000, 6540000, 6530000, 3640000]
-}).set_index("Store Hour")
+# Sensor-Valid Aggregate Conversion Rate (Strict Topic 05 Schema Requirement)
+sensor_valid_df = df[df["SENSOR_OK"] == True]
+clean_footfall = sensor_valid_df["FOOTFALL"].sum()
+clean_bills = sensor_valid_df["BILLS"].sum()
+valid_conv_rate = (clean_bills / clean_footfall * 100) if clean_footfall > 0 else 0.0
 
-col_left, col_right = st.columns(2)
-with col_left:
-    st.write("**Total Sales Revenue ($)**")
-    st.bar_chart(hourly_data["Revenue ($)"], color="#FFB000")
-with col_right:
-    st.write("**Customer Footfall (Visitors)**")
-    st.bar_chart(hourly_data["Footfall (Visitors)"], color="#2979FF")
+# 3. Header & Metric Cards
+st.title("RetailLens: Store Hourly Performance Lakehouse")
+st.caption("Topic 05: Store Footfall vs Sales Conversion | Gold Mart Dashboard")
+st.markdown("---")
 
-st.divider()
+col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("Total Revenue", f"${total_revenue/1e6:.2f}M")
+col2.metric("Total Footfall", f"{total_footfall:,}")
+col3.metric("Total Transactions", f"{total_bills:,}")
+col4.metric("Valid Conversion Rate", f"{valid_conv_rate:.2f}%")
+col5.metric("Active Stores", f"{active_stores}")
 
-# Store Performance Rankings Table
-st.subheader("Store Performance & Efficiency Rankings")
-store_data = pd.DataFrame({
-    "Store ID": ["ST04", "ST08", "ST02", "ST10", "ST01", "ST05", "ST07", "ST12", "ST03", "ST06", "ST11", "ST09"],
-    "City": ["CITY3", "CITY1", "CITY0", "CITY4", "CITY0", "CITY3", "CITY2", "CITY5", "CITY1", "CITY4", "CITY5", "CITY2"],
-    "Format": ["High Street", "High Street", "High Street", "High Street", "Mall", "High Street", "Mall", "High Street", "Mall", "Mall", "Mall", "Mall"],
-    "Footfall": [40250, 40180, 40310, 40220, 40150, 40290, 40200, 40350, 40120, 40280, 40190, 40100],
-    "Transactions": [9152, 8840, 8560, 8490, 7520, 7480, 7120, 6890, 6510, 6240, 5680, 3122],
-    "Total Revenue ($)": [5154320.10, 4982140.50, 4812300.20, 4790100.80, 4120300.00, 4080120.40, 3890450.00, 3650200.00, 3320100.50, 3120400.00, 2720100.20, 1726224.34],
-    "Avg Conversion Rate": ["22.74%", "22.00%", "21.23%", "21.11%", "18.73%", "18.57%", "17.71%", "17.08%", "16.23%", "15.49%", "14.13%", "7.78%"]
-})
-st.dataframe(store_data, use_container_width=True, hide_index=True)
+st.markdown("---")
 
-st.info("Architecture: Medallion Lakehouse (Bronze -> Silver -> Gold) processed via Databricks Delta Lake and served on Snowflake RETAIL_DW.")
+# 4. Store Performance Rankings (Reconciled with Snowflake GOLD query)
+st.subheader("Store Performance Rankings")
+st.caption("Aggregated across all 12,960 store-operating hours (Sorted by Total Revenue)")
+
+store_rankings = df.groupby(["STORE_ID", "CITY", "FORMAT"]).agg(
+    FOOTFALL=("FOOTFALL", "sum"),
+    TRANSACTIONS=("BILLS", "sum"),
+    TOTAL_REVENUE=("REVENUE", "sum")
+).reset_index()
+
+# Individual store conversion rate calculated on sensor-valid hours
+store_valid_metrics = sensor_valid_df.groupby("STORE_ID").agg(
+    VALID_FOOTFALL=("FOOTFALL", "sum"),
+    VALID_BILLS=("BILLS", "sum")
+).reset_index()
+store_valid_metrics["CONV_RATE_%"] = (
+    store_valid_metrics["VALID_BILLS"] / store_valid_metrics["VALID_FOOTFALL"] * 100
+).round(2)
+
+store_rankings = store_rankings.merge(
+    store_valid_metrics[["STORE_ID", "CONV_RATE_%"]], on="STORE_ID", how="left"
+)
+store_rankings = store_rankings.sort_values(by="TOTAL_REVENUE", ascending=False)
+
+st.dataframe(
+    store_rankings.style.format({
+        "FOOTFALL": "{:,}",
+        "TRANSACTIONS": "{:,}",
+        "TOTAL_REVENUE": "${:,.2f}",
+        "CONV_RATE_%": "{:.2f}%"
+    }),
+    use_container_width=True
+)
+
+st.markdown("---")
+
+# 5. Hourly Revenue Profile (10:00 to 21:00 Operating Window)
+st.subheader("Hourly Revenue Profile")
+hourly_profile = df.groupby("HOUR").agg(
+    TOTAL_REVENUE=("REVENUE", "sum"),
+    TOTAL_FOOTFALL=("FOOTFALL", "sum"),
+    TOTAL_BILLS=("BILLS", "sum")
+).reset_index()
+
+st.bar_chart(hourly_profile.set_index("HOUR")["TOTAL_REVENUE"])
